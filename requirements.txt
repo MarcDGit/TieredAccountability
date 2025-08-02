@@ -1,9 +1,9 @@
-streamlit
-pandas
+streamlit>=1.28.0
+pandas>=2.2.0
 sqlite3
 datetime
 uuid
-plotly
-streamlit-option-menu
-streamlit-aggrid
-streamlit-authenticator
+plotly>=5.15.0
+streamlit-option-menu>=0.3.0
+streamlit-aggrid==0.3.4.post3
+streamlit-authenticator==0.2.3
