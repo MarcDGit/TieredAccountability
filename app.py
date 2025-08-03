@@ -138,7 +138,15 @@ def display_escalation_card(escalation):
         with col1:
             st.write(f"**{escalation['title']}**")
             st.write(f"_{escalation['description'][:100]}..._" if len(escalation['description']) > 100 else f"_{escalation['description']}_")
-            st.write(f"Created by: {escalation['created_by_name']} | Current Tier: {escalation['current_tier_name']}")
+            escalation_info = f"Created by: {escalation['created_by_name']} | Current Tier: {escalation['current_tier_name']}"
+            
+            # Add escalation information if escalated
+            if escalation['target_tier_id'] and escalation['assigned_to_name']:
+                escalation_info += f" | 📈 Escalated to: {escalation['assigned_to_name']}"
+                if escalation['days_since_escalation'] is not None:
+                    escalation_info += f" ({escalation['days_since_escalation']}d ago)"
+            
+            st.write(escalation_info)
         
         with col2:
             urgency_class = f"urgency-{escalation['urgency'].lower()}"
@@ -476,7 +484,16 @@ def create_escalation():
     """Form to create new escalations"""
     st.subheader("🆕 Create New Escalation")
     
-    with st.form("create_escalation_form"):
+    # Initialize session state for form reset
+    if 'escalation_created' not in st.session_state:
+        st.session_state.escalation_created = False
+    
+    # Show success message if escalation was just created
+    if st.session_state.escalation_created:
+        st.success("✅ New escalation created successfully! The form has been reset for your next entry.")
+        st.session_state.escalation_created = False
+    
+    with st.form("create_escalation_form", clear_on_submit=True):
         col1, col2 = st.columns([2, 1])
         
         with col1:
@@ -507,7 +524,7 @@ def create_escalation():
                     created_by=st.session_state.selected_person,
                     source_tier_id=st.session_state.selected_tier
                 )
-                st.success(f"Escalation '{title}' created successfully!")
+                st.session_state.escalation_created = True
                 st.rerun()
             else:
                 st.error("Please fill in all required fields (*)")
@@ -517,7 +534,7 @@ def manage_escalations():
     st.subheader("🔄 Manage Escalations")
     
     # Filters
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         status_filter = st.selectbox("Filter by Status", 
@@ -528,6 +545,10 @@ def manage_escalations():
                                     ["All", "Critical", "High", "Medium", "Low"])
     
     with col3:
+        escalation_filter = st.selectbox("Escalation Status", 
+                                       ["All", "Escalated Only", "Not Escalated"])
+    
+    with col4:
         days_filter = st.slider("Days Open", 0, 30, (0, 30))
     
     # Get escalations based on filters
@@ -543,6 +564,11 @@ def manage_escalations():
         if urgency_filter != "All":
             filtered_escalations = filtered_escalations[filtered_escalations['urgency'] == urgency_filter]
         
+        if escalation_filter == "Escalated Only":
+            filtered_escalations = filtered_escalations[filtered_escalations['target_tier_id'].notna()]
+        elif escalation_filter == "Not Escalated":
+            filtered_escalations = filtered_escalations[filtered_escalations['target_tier_id'].isna()]
+        
         filtered_escalations = filtered_escalations[
             (filtered_escalations['days_open'] >= days_filter[0]) & 
             (filtered_escalations['days_open'] <= days_filter[1])
@@ -551,42 +577,88 @@ def manage_escalations():
         st.write(f"**{len(filtered_escalations)}** escalations found")
         
         for _, escalation in filtered_escalations.iterrows():
-            with st.expander(f"{escalation['title']} - {escalation['status']}"):
+            # Create more informative expander title
+            expander_title = f"{escalation['title']} - {escalation['status']}"
+            if escalation['target_tier_id'] and escalation['assigned_to_name']:
+                expander_title += f" (Escalated to {escalation['target_tier_name']})"
+            
+            with st.expander(expander_title):
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
                     st.write(f"**Description:** {escalation['description']}")
-                    st.write(f"**Created by:** {escalation['created_by_name']}")
-                    st.write(f"**Days open:** {escalation['days_open']}")
+                    st.write(f"**Created by:** {escalation['created_by_name']} (from {escalation['source_tier_name']})")
+                    
+                    # Show escalation flow information
+                    if escalation['target_tier_id'] and escalation['assigned_to_name']:
+                        st.write(f"**📈 Escalated to:** {escalation['target_tier_name']} → {escalation['assigned_to_name']}")
+                        if escalation['days_since_escalation'] is not None:
+                            st.write(f"**⏱️ Days since escalation:** {escalation['days_since_escalation']} days")
+                    
+                    st.write(f"**📅 Total days open:** {escalation['days_open']} days")
+                    st.write(f"**🏢 Current tier:** {escalation['current_tier_name']}")
                     
                     if escalation['feedback']:
-                        st.write(f"**Feedback:** {escalation['feedback']}")
+                        st.write(f"**💬 Feedback:** {escalation['feedback']}")
                 
                 with col2:
-                    # Action buttons based on status and user role
-                    if escalation['status'] == 'Open' and escalation['current_tier_id'] == st.session_state.selected_tier:
-                        if st.button(f"Escalate to Next Tier", key=f"escalate_{escalation['id']}"):
+                    # Check if current user is the creator/owner of the escalation
+                    is_creator = escalation['created_by'] == st.session_state.selected_person
+                    is_assigned = escalation['assigned_to'] == st.session_state.selected_person
+                    current_tier_match = escalation['current_tier_id'] == st.session_state.selected_tier
+                    
+                    # Owner/Creator permissions - can always close or delete (except when escalated and in progress)
+                    if is_creator:
+                        col_owner1, col_owner2 = st.columns(2)
+                        with col_owner1:
+                            # Owner can close escalation if not in progress at another tier
+                            if escalation['status'] != 'In Progress' or current_tier_match:
+                                if st.button(f"✅ Close", key=f"owner_close_{escalation['id']}", help="Close as resolved"):
+                                    db.close_escalation(escalation['id'], st.session_state.selected_person)
+                                    st.success("✅ Escalation closed by owner!")
+                                    st.rerun()
+                        
+                        with col_owner2:
+                            # Owner can delete escalation if it's not in progress at another tier
+                            if escalation['status'] != 'In Progress' or current_tier_match:
+                                if st.button(f"🗑️ Delete", key=f"owner_delete_{escalation['id']}", help="Permanently delete"):
+                                    if db.delete_escalation(escalation['id'], st.session_state.selected_person):
+                                        st.success("🗑️ Escalation deleted successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Unable to delete escalation. Only creators can delete their own escalations.")
+                    
+                    # Standard workflow actions
+                    if escalation['status'] == 'Open' and current_tier_match:
+                        if st.button(f"⬆️ Escalate to Next Tier", key=f"escalate_{escalation['id']}"):
                             show_escalation_form(escalation['id'])
                     
-                    elif escalation['status'] == 'In Progress' and escalation['assigned_to'] == st.session_state.selected_person:
-                        if st.button(f"Provide Feedback", key=f"feedback_{escalation['id']}"):
-                            show_feedback_form(escalation['id'])
+                    elif escalation['status'] == 'In Progress':
+                        if is_assigned:
+                            # Assigned user can provide feedback and return to creator
+                            if st.button(f"💬 Provide Feedback & Return", key=f"feedback_{escalation['id']}"):
+                                show_feedback_form(escalation['id'])
+                        elif current_tier_match and not is_creator:
+                            # Other users in the same tier can also provide feedback
+                            if st.button(f"💬 Provide Feedback & Return", key=f"tier_feedback_{escalation['id']}"):
+                                show_feedback_form(escalation['id'])
                     
-                    elif escalation['status'] == 'Pending Feedback' and escalation['created_by'] == st.session_state.selected_person:
-                        if st.button(f"Close Escalation", key=f"close_{escalation['id']}"):
+                    elif escalation['status'] == 'Pending Feedback' and is_creator:
+                        if st.button(f"✅ Close Escalation", key=f"close_{escalation['id']}"):
                             db.close_escalation(escalation['id'], st.session_state.selected_person)
-                            st.success("Escalation closed!")
+                            st.success("✅ Escalation closed!")
                             st.rerun()
                     
-                    # View history button
-                    if st.button(f"View History", key=f"history_{escalation['id']}"):
+                    # View history button (available to everyone)
+                    if st.button(f"📜 View History", key=f"history_{escalation['id']}"):
                         show_escalation_history(escalation['id'])
     else:
         st.info("No escalations found for your tier.")
 
 def show_escalation_form(escalation_id):
     """Show form to escalate to next tier"""
-    st.subheader("Escalate to Next Tier")
+    st.subheader("⬆️ Escalate to Next Tier")
+    st.info("This will move the escalation to a higher tier for additional support or expertise.")
     
     # Get available tiers (higher level)
     tiers_df = db.get_tiers()
@@ -612,25 +684,42 @@ def show_escalation_form(escalation_id):
             st.error("No people found in target tier.")
             return
         
-        if st.form_submit_button("Escalate"):
-            db.escalate_to_next_tier(escalation_id, target_tier_id, assigned_to, st.session_state.selected_person)
-            st.success(f"Escalation sent to {selected_tier_name}")
-            st.rerun()
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.form_submit_button("⬆️ Escalate Now", type="primary"):
+                db.escalate_to_next_tier(escalation_id, target_tier_id, assigned_to, st.session_state.selected_person)
+                st.success(f"✅ Escalation successfully sent to {selected_tier_name} and assigned to {selected_person_name}!")
+                st.rerun()
+        
+        with col2:
+            if st.form_submit_button("❌ Cancel"):
+                st.rerun()
 
 def show_feedback_form(escalation_id):
-    """Show form to provide feedback"""
-    st.subheader("Provide Feedback")
+    """Show form to provide feedback and return to creator"""
+    st.subheader("💬 Provide Feedback & Return to Creator")
+    st.info("This will return the escalation to the original creator with your feedback for their review.")
     
     with st.form(f"feedback_form_{escalation_id}"):
-        feedback = st.text_area("Feedback", placeholder="Provide your feedback and resolution details...")
+        feedback = st.text_area("Feedback*", 
+                               placeholder="Provide your feedback, resolution details, or recommendations...\n\nExample:\n- Issue has been resolved by...\n- Recommended next steps are...\n- Additional information needed...",
+                               height=150)
         
-        if st.form_submit_button("Submit Feedback"):
-            if feedback:
-                db.provide_feedback(escalation_id, feedback, st.session_state.selected_person)
-                st.success("Feedback provided successfully!")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.form_submit_button("📤 Submit Feedback & Return", type="primary"):
+                if feedback:
+                    if db.return_escalation_to_creator(escalation_id, feedback, st.session_state.selected_person):
+                        st.success("✅ Feedback provided and escalation returned to creator!")
+                        st.rerun()
+                    else:
+                        st.error("Unable to return escalation to creator.")
+                else:
+                    st.error("Please provide feedback before submitting.")
+        
+        with col2:
+            if st.form_submit_button("❌ Cancel"):
                 st.rerun()
-            else:
-                st.error("Please provide feedback before submitting.")
 
 def show_escalation_history(escalation_id):
     """Show escalation history"""

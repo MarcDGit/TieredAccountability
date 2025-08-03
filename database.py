@@ -356,6 +356,48 @@ class DatabaseManager:
             conn.commit()
             return True
     
+    def delete_escalation(self, escalation_id: str, performed_by: str) -> bool:
+        """Delete an escalation (only by creator/owner)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Verify the user is the creator of the escalation
+            cursor.execute('SELECT created_by FROM escalations WHERE id = ?', (escalation_id,))
+            result = cursor.fetchone()
+            if not result or result[0] != performed_by:
+                return False
+            
+            # Delete the escalation and its history
+            cursor.execute('DELETE FROM escalation_history WHERE escalation_id = ?', (escalation_id,))
+            cursor.execute('DELETE FROM escalations WHERE id = ?', (escalation_id,))
+            
+            conn.commit()
+            return True
+    
+    def return_escalation_to_creator(self, escalation_id: str, feedback: str, performed_by: str) -> bool:
+        """Return escalation to creator with feedback"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get the source tier to return escalation to
+            cursor.execute('SELECT source_tier_id FROM escalations WHERE id = ?', (escalation_id,))
+            result = cursor.fetchone()
+            if not result:
+                return False
+            
+            source_tier_id = result[0]
+            
+            cursor.execute('''
+                UPDATE escalations 
+                SET feedback = ?, status = 'Pending Feedback', current_tier_id = ?, 
+                    resolved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (feedback, source_tier_id, escalation_id))
+            
+            self._add_escalation_history(cursor, escalation_id, "Returned to Creator", performed_by, "In Progress", "Pending Feedback", feedback)
+            conn.commit()
+            return True
+    
     def get_escalations(self, tier_id: Optional[str] = None, person_id: Optional[str] = None, 
                        status_filter: Optional[str] = None) -> pd.DataFrame:
         """Get escalations with various filters"""
@@ -366,7 +408,12 @@ class DatabaseManager:
                    st.name as source_tier_name,
                    tt.name as target_tier_name,
                    ct.name as current_tier_name,
-                   CAST((julianday('now') - julianday(e.created_at)) AS INTEGER) as days_open
+                   CAST((julianday('now') - julianday(e.created_at)) AS INTEGER) as days_open,
+                   CASE 
+                       WHEN e.escalated_at IS NOT NULL 
+                       THEN CAST((julianday('now') - julianday(e.escalated_at)) AS INTEGER)
+                       ELSE NULL 
+                   END as days_since_escalation
             FROM escalations e
             JOIN people creator ON e.created_by = creator.id
             LEFT JOIN people assignee ON e.assigned_to = assignee.id
