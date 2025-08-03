@@ -105,6 +105,12 @@ if 'selected_person' not in st.session_state:
     st.session_state.selected_person = None
 if 'selected_tier' not in st.session_state:
     st.session_state.selected_tier = None
+if 'admin_authenticated' not in st.session_state:
+    st.session_state.admin_authenticated = False
+if 'editing_tier' not in st.session_state:
+    st.session_state.editing_tier = None
+if 'editing_person' not in st.session_state:
+    st.session_state.editing_person = None
 
 def get_urgency_color(urgency):
     colors = {
@@ -147,104 +153,181 @@ def display_escalation_card(escalation):
         
         st.divider()
 
+def show_admin_login():
+    """Show admin login form"""
+    st.subheader("🔐 Admin Authentication Required")
+    st.info("Please enter the admin password to access the admin panel.")
+    
+    with st.form("admin_login_form"):
+        password = st.text_input("Admin Password", type="password", placeholder="Enter admin password")
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            login_submitted = st.form_submit_button("Login", type="primary")
+        
+        if login_submitted:
+            if password and db.verify_admin_password(password):
+                st.session_state.admin_authenticated = True
+                st.success("Authentication successful! Redirecting...")
+                st.rerun()
+            else:
+                st.error("Invalid password. Please try again.")
+
 def admin_panel():
     """Admin panel for managing tiers and people"""
     st.markdown("<h1 class='main-header'>🔧 Admin Panel</h1>", unsafe_allow_html=True)
+    
+    # Check admin authentication
+    if not st.session_state.admin_authenticated:
+        show_admin_login()
+        return
+    
+    # Add logout and password change options
+    col1, col2, col3 = st.columns([3, 1, 1])
+    with col2:
+        if st.button("🔑 Change Password"):
+            st.session_state.show_password_change = True
+    with col3:
+        if st.button("🚪 Logout"):
+            st.session_state.admin_authenticated = False
+            st.session_state.editing_tier = None
+            st.session_state.editing_person = None
+            st.rerun()
+    
+    # Show password change form if requested
+    if hasattr(st.session_state, 'show_password_change') and st.session_state.show_password_change:
+        show_password_change_form()
     
     tab1, tab2, tab3 = st.tabs(["📊 Tier Management", "👥 People Management", "📈 Analytics"])
     
     with tab1:
         st.subheader("Tier Management")
         
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.write("### Create New Tier")
-            tier_name = st.text_input("Tier Name", placeholder="e.g., Level 1 Support")
-            tier_level = st.number_input("Tier Level", min_value=1, value=1, step=1)
+        # Check if we're editing a tier
+        if st.session_state.editing_tier:
+            show_edit_tier_form()
+        else:
+            col1, col2 = st.columns([1, 2])
             
-            # Get existing tiers for parent selection
-            tiers_df = db.get_tiers()
-            if not tiers_df.empty:
-                tier_options = ["None"] + [(row['name'], row['id']) for _, row in tiers_df.iterrows()]
-                parent_tier = st.selectbox("Parent Tier", options=[opt[0] for opt in tier_options])
-                parent_tier_id = None if parent_tier == "None" else next(opt[1] for opt in tier_options if opt[0] == parent_tier)
-            else:
-                parent_tier_id = None
-            
-            tier_description = st.text_area("Description", placeholder="Describe the tier's responsibilities...")
-            
-            if st.button("Create Tier"):
-                if tier_name:
-                    tier_id = db.create_tier(tier_name, tier_level, parent_tier_id, tier_description)
-                    st.success(f"Tier '{tier_name}' created successfully!")
-                    st.rerun()
+            with col1:
+                st.write("### Create New Tier")
+                tier_name = st.text_input("Tier Name", placeholder="e.g., Level 1 Support")
+                tier_level = st.number_input("Tier Level", min_value=1, value=1, step=1)
+                
+                # Get existing tiers for parent selection
+                tiers_df = db.get_tiers()
+                if not tiers_df.empty:
+                    tier_options = ["None"] + [(row['name'], row['id']) for _, row in tiers_df.iterrows()]
+                    parent_tier = st.selectbox("Parent Tier", options=[opt[0] for opt in tier_options])
+                    parent_tier_id = None if parent_tier == "None" else next(opt[1] for opt in tier_options if opt[0] == parent_tier)
                 else:
-                    st.error("Please provide a tier name")
-        
-        with col2:
-            st.write("### Existing Tiers")
-            tiers_df = db.get_tiers()
-            if not tiers_df.empty:
-                for _, tier in tiers_df.iterrows():
-                    with st.expander(f"Level {tier['level']}: {tier['name']}"):
-                        st.write(f"**Description:** {tier['description'] or 'No description'}")
-                        st.write(f"**Parent Tier:** {tier['parent_tier_name'] or 'None'}")
-                        st.write(f"**Created:** {tier['created_at']}")
-                        
-                        # Count people in this tier
-                        people_count = len(db.get_people(tier['id']))
-                        st.write(f"**People in tier:** {people_count}")
-            else:
-                st.info("No tiers created yet.")
+                    parent_tier_id = None
+                
+                tier_description = st.text_area("Description", placeholder="Describe the tier's responsibilities...")
+                
+                if st.button("Create Tier"):
+                    if tier_name:
+                        tier_id = db.create_tier(tier_name, tier_level, parent_tier_id, tier_description)
+                        st.success(f"Tier '{tier_name}' created successfully!")
+                        st.rerun()
+                    else:
+                        st.error("Please provide a tier name")
+            
+            with col2:
+                st.write("### Existing Tiers")
+                tiers_df = db.get_tiers()
+                if not tiers_df.empty:
+                    for _, tier in tiers_df.iterrows():
+                        with st.expander(f"Level {tier['level']}: {tier['name']}"):
+                            st.write(f"**Description:** {tier['description'] or 'No description'}")
+                            st.write(f"**Parent Tier:** {tier['parent_tier_name'] or 'None'}")
+                            st.write(f"**Created:** {tier['created_at']}")
+                            
+                            # Count people in this tier
+                            people_count = len(db.get_people(tier['id']))
+                            st.write(f"**People in tier:** {people_count}")
+                            
+                            # Edit and Delete buttons
+                            col_edit, col_delete = st.columns(2)
+                            with col_edit:
+                                if st.button(f"✏️ Edit", key=f"edit_tier_{tier['id']}"):
+                                    st.session_state.editing_tier = tier['id']
+                                    st.rerun()
+                            
+                            with col_delete:
+                                if st.button(f"🗑️ Delete", key=f"delete_tier_{tier['id']}"):
+                                    if db.delete_tier(tier['id']):
+                                        st.success(f"Tier '{tier['name']}' deleted successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Cannot delete tier: It has associated people, escalations, or child tiers.")
+                else:
+                    st.info("No tiers created yet.")
     
     with tab2:
         st.subheader("People Management")
         
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.write("### Add New Person")
-            person_name = st.text_input("Full Name", placeholder="John Doe")
-            person_email = st.text_input("Email", placeholder="john.doe@company.com")
+        # Check if we're editing a person
+        if st.session_state.editing_person:
+            show_edit_person_form()
+        else:
+            col1, col2 = st.columns([1, 2])
             
-            # Tier selection
-            tiers_df = db.get_tiers()
-            if not tiers_df.empty:
-                tier_options = [(row['name'], row['id']) for _, row in tiers_df.iterrows()]
-                selected_tier_name = st.selectbox("Assign to Tier", options=[opt[0] for opt in tier_options])
-                selected_tier_id = next(opt[1] for opt in tier_options if opt[0] == selected_tier_name)
-            else:
-                st.error("Please create at least one tier first!")
-                selected_tier_id = None
-            
-            person_role = st.selectbox("Role", ["member", "lead", "manager", "admin"])
-            
-            if st.button("Add Person"):
-                if person_name and person_email and selected_tier_id:
-                    try:
-                        person_id = db.create_person(person_name, person_email, selected_tier_id, person_role)
-                        st.success(f"Person '{person_name}' added successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error creating person: {str(e)}")
+            with col1:
+                st.write("### Add New Person")
+                person_name = st.text_input("Full Name", placeholder="John Doe")
+                person_email = st.text_input("Email", placeholder="john.doe@company.com")
+                
+                # Tier selection
+                tiers_df = db.get_tiers()
+                if not tiers_df.empty:
+                    tier_options = [(row['name'], row['id']) for _, row in tiers_df.iterrows()]
+                    selected_tier_name = st.selectbox("Assign to Tier", options=[opt[0] for opt in tier_options])
+                    selected_tier_id = next(opt[1] for opt in tier_options if opt[0] == selected_tier_name)
                 else:
-                    st.error("Please fill in all required fields")
-        
-        with col2:
-            st.write("### People Directory")
-            people_df = db.get_people()
-            if not people_df.empty:
-                # Group by tier
-                for tier_name in people_df['tier_name'].unique():
-                    tier_people = people_df[people_df['tier_name'] == tier_name]
-                    with st.expander(f"{tier_name} ({len(tier_people)} people)"):
-                        for _, person in tier_people.iterrows():
-                            st.write(f"**{person['name']}** ({person['role']})")
-                            st.write(f"📧 {person['email']}")
-                            st.write("---")
-            else:
-                st.info("No people added yet.")
+                    st.error("Please create at least one tier first!")
+                    selected_tier_id = None
+                
+                person_role = st.selectbox("Role", ["member", "lead", "manager", "admin"])
+                
+                if st.button("Add Person"):
+                    if person_name and person_email and selected_tier_id:
+                        try:
+                            person_id = db.create_person(person_name, person_email, selected_tier_id, person_role)
+                            st.success(f"Person '{person_name}' added successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error creating person: {str(e)}")
+                    else:
+                        st.error("Please fill in all required fields")
+            
+            with col2:
+                st.write("### People Directory")
+                people_df = db.get_people()
+                if not people_df.empty:
+                    # Group by tier
+                    for tier_name in people_df['tier_name'].unique():
+                        tier_people = people_df[people_df['tier_name'] == tier_name]
+                        with st.expander(f"{tier_name} ({len(tier_people)} people)"):
+                            for _, person in tier_people.iterrows():
+                                col_info, col_actions = st.columns([3, 1])
+                                with col_info:
+                                    st.write(f"**{person['name']}** ({person['role']})")
+                                    st.write(f"📧 {person['email']}")
+                                
+                                with col_actions:
+                                    if st.button(f"✏️", key=f"edit_person_{person['id']}", help="Edit"):
+                                        st.session_state.editing_person = person['id']
+                                        st.rerun()
+                                    if st.button(f"🗑️", key=f"delete_person_{person['id']}", help="Delete"):
+                                        if db.delete_person(person['id']):
+                                            st.success(f"Person '{person['name']}' deleted successfully!")
+                                            st.rerun()
+                                        else:
+                                            st.error("Error deleting person.")
+                                st.write("---")
+                else:
+                    st.info("No people added yet.")
     
     with tab3:
         st.subheader("Analytics Dashboard")
@@ -621,6 +704,150 @@ def tier_overview():
             st.plotly_chart(fig_status, use_container_width=True)
     else:
         st.info("No escalations data available for this tier.")
+
+def show_password_change_form():
+    """Show password change form"""
+    st.subheader("🔑 Change Admin Password")
+    
+    with st.form("password_change_form"):
+        current_password = st.text_input("Current Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            change_submitted = st.form_submit_button("Change Password", type="primary")
+        with col2:
+            if st.form_submit_button("Cancel"):
+                st.session_state.show_password_change = False
+                st.rerun()
+        
+        if change_submitted:
+            if not current_password or not new_password or not confirm_password:
+                st.error("Please fill in all fields.")
+            elif new_password != confirm_password:
+                st.error("New passwords do not match.")
+            elif len(new_password) < 3:
+                st.error("New password must be at least 3 characters long.")
+            elif db.change_admin_password(current_password, new_password):
+                st.success("Password changed successfully!")
+                st.session_state.show_password_change = False
+                st.rerun()
+            else:
+                st.error("Current password is incorrect.")
+
+def show_edit_tier_form():
+    """Show edit tier form"""
+    tier_id = st.session_state.editing_tier
+    tier_data = db.get_tier_by_id(tier_id)
+    
+    if not tier_data:
+        st.error("Tier not found.")
+        st.session_state.editing_tier = None
+        st.rerun()
+        return
+    
+    st.subheader(f"✏️ Edit Tier: {tier_data['name']}")
+    
+    with st.form("edit_tier_form"):
+        tier_name = st.text_input("Tier Name", value=tier_data['name'])
+        tier_level = st.number_input("Tier Level", min_value=1, value=tier_data['level'], step=1)
+        
+        # Get existing tiers for parent selection (excluding current tier)
+        tiers_df = db.get_tiers()
+        available_tiers = tiers_df[tiers_df['id'] != tier_id]
+        
+        if not available_tiers.empty:
+            tier_options = ["None"] + [(row['name'], row['id']) for _, row in available_tiers.iterrows()]
+            current_parent = tier_data['parent_tier_name'] if tier_data['parent_tier_id'] else "None"
+            try:
+                parent_index = [opt[0] for opt in tier_options].index(current_parent)
+            except ValueError:
+                parent_index = 0
+            
+            parent_tier = st.selectbox("Parent Tier", options=[opt[0] for opt in tier_options], index=parent_index)
+            parent_tier_id = None if parent_tier == "None" else next(opt[1] for opt in tier_options if opt[0] == parent_tier)
+        else:
+            parent_tier_id = None
+        
+        tier_description = st.text_area("Description", value=tier_data['description'] or "")
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.form_submit_button("Update Tier", type="primary"):
+                if tier_name:
+                    db.update_tier(tier_id, tier_name, tier_level, parent_tier_id, tier_description)
+                    st.success(f"Tier '{tier_name}' updated successfully!")
+                    st.session_state.editing_tier = None
+                    st.rerun()
+                else:
+                    st.error("Please provide a tier name")
+        
+        with col2:
+            if st.form_submit_button("Cancel"):
+                st.session_state.editing_tier = None
+                st.rerun()
+
+def show_edit_person_form():
+    """Show edit person form"""
+    person_id = st.session_state.editing_person
+    person_data = db.get_person_by_id(person_id)
+    
+    if not person_data:
+        st.error("Person not found.")
+        st.session_state.editing_person = None
+        st.rerun()
+        return
+    
+    st.subheader(f"✏️ Edit Person: {person_data['name']}")
+    
+    with st.form("edit_person_form"):
+        person_name = st.text_input("Full Name", value=person_data['name'])
+        person_email = st.text_input("Email", value=person_data['email'])
+        
+        # Tier selection
+        tiers_df = db.get_tiers()
+        if not tiers_df.empty:
+            tier_options = [(row['name'], row['id']) for _, row in tiers_df.iterrows()]
+            try:
+                tier_index = [opt[1] for opt in tier_options].index(person_data['tier_id'])
+            except ValueError:
+                tier_index = 0
+            
+            selected_tier_name = st.selectbox("Assign to Tier", 
+                                            options=[opt[0] for opt in tier_options], 
+                                            index=tier_index)
+            selected_tier_id = next(opt[1] for opt in tier_options if opt[0] == selected_tier_name)
+        else:
+            st.error("No tiers available!")
+            return
+        
+        role_options = ["member", "lead", "manager", "admin"]
+        try:
+            role_index = role_options.index(person_data['role'])
+        except ValueError:
+            role_index = 0
+        
+        person_role = st.selectbox("Role", role_options, index=role_index)
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.form_submit_button("Update Person", type="primary"):
+                if person_name and person_email and selected_tier_id:
+                    try:
+                        db.update_person(person_id, person_name, person_email, selected_tier_id, person_role)
+                        st.success(f"Person '{person_name}' updated successfully!")
+                        st.session_state.editing_person = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error updating person: {str(e)}")
+                else:
+                    st.error("Please fill in all required fields")
+        
+        with col2:
+            if st.form_submit_button("Cancel"):
+                st.session_state.editing_person = None
+                st.rerun()
 
 # Main navigation
 def main():
