@@ -56,8 +56,10 @@ streamlit run app.py
 
 1. **Admin Panel Setup**:
    - Navigate to "🔧 Admin Panel"
+   - **Enter the initial admin password: `TA`**
    - Create your tier hierarchy (e.g., Tier 1, Tier 2, Tier 3)
    - Add people to each tier with appropriate roles
+   - **Important**: Change the default admin password after first login for security
 
 2. **Start Using**:
    - Select your identity from the dashboard sidebar
@@ -66,9 +68,11 @@ streamlit run app.py
 ## 📊 Core Features
 
 ### 1. Admin Panel
-- **Tier Management**: Create and configure hierarchical accountability levels
-- **People Management**: Add users and assign them to tiers with specific roles
+- **Password Protection**: Secure access with initial password `TA` (changeable)
+- **Tier Management**: Create, edit, and delete hierarchical accountability levels
+- **People Management**: Add, edit, and delete users and assign them to tiers with specific roles
 - **Analytics Dashboard**: View system-wide metrics and performance indicators
+- **Password Management**: Change admin password for enhanced security
 
 ### 2. Escalation Dashboard
 - **Personal Dashboard**: View personal metrics and escalations
@@ -150,6 +154,12 @@ streamlit run app.py
 
 ## 🔐 Roles and Permissions
 
+### Admin Access
+- **Initial Password**: `TA` (must be changed after first login)
+- **Admin Panel Access**: Secure authentication required
+- **Password Management**: Admin can change password anytime
+- **Full CRUD Operations**: Create, read, update, delete for all entities
+
 ### Role Definitions
 
 | Role | Permissions | Typical Responsibilities |
@@ -158,6 +168,12 @@ streamlit run app.py
 | **Lead** | Manage team escalations, escalate | Team leaders, supervisors |
 | **Manager** | Cross-tier visibility, analytics | Department managers |
 | **Admin** | Full system access, configuration | System administrators |
+
+### Security Features
+- **Password Protection**: Admin panel requires authentication
+- **Secure Password Storage**: Passwords are hashed using SHA-256
+- **Session Management**: Authentication persists during session
+- **Safe Delete Operations**: Prevents deletion of tiers/people with dependencies
 
 ## 📚 Definitions and Abbreviations
 
@@ -284,6 +300,12 @@ streamlit run app.py
 - `performed_by`: User who performed action
 - `from_status`/`to_status`: Status transition
 - `timestamp`: When action occurred
+
+#### Admin Settings Table
+- `id`: Unique identifier
+- `setting_name`: Configuration setting name
+- `setting_value`: Hashed setting value
+- `created_at`/`updated_at`: Timestamps
 
 ### Dependencies
 

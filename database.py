@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Optional
 import pandas as pd
+import hashlib
 
 class DatabaseManager:
     def __init__(self, db_path: str = "accountability_dashboard.db"):
@@ -16,6 +17,27 @@ class DatabaseManager:
         """Initialize the database with all required tables"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            
+            # Create admin settings table for password management
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_settings (
+                    id INTEGER PRIMARY KEY,
+                    setting_name TEXT UNIQUE NOT NULL,
+                    setting_value TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Set initial admin password if not exists
+            cursor.execute('SELECT COUNT(*) FROM admin_settings WHERE setting_name = "admin_password"')
+            if cursor.fetchone()[0] == 0:
+                # Hash the initial password 'TA'
+                password_hash = hashlib.sha256("TA".encode()).hexdigest()
+                cursor.execute('''
+                    INSERT INTO admin_settings (setting_name, setting_value)
+                    VALUES ("admin_password", ?)
+                ''', (password_hash,))
             
             # Create tiers table
             cursor.execute('''
@@ -89,6 +111,32 @@ class DatabaseManager:
             
             conn.commit()
     
+    # Admin password management methods
+    def verify_admin_password(self, password: str) -> bool:
+        """Verify admin password"""
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT setting_value FROM admin_settings WHERE setting_name = "admin_password"')
+            result = cursor.fetchone()
+            return result and result[0] == password_hash
+    
+    def change_admin_password(self, current_password: str, new_password: str) -> bool:
+        """Change admin password"""
+        if not self.verify_admin_password(current_password):
+            return False
+        
+        new_password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE admin_settings 
+                SET setting_value = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE setting_name = "admin_password"
+            ''', (new_password_hash,))
+            conn.commit()
+        return True
+    
     # Tier management methods
     def create_tier(self, name: str, level: int, parent_tier_id: Optional[str] = None, description: str = "") -> str:
         """Create a new tier"""
@@ -101,6 +149,60 @@ class DatabaseManager:
             ''', (tier_id, name, level, parent_tier_id, description))
             conn.commit()
         return tier_id
+    
+    def update_tier(self, tier_id: str, name: str, level: int, parent_tier_id: Optional[str] = None, description: str = "") -> bool:
+        """Update an existing tier"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE tiers 
+                SET name = ?, level = ?, parent_tier_id = ?, description = ?
+                WHERE id = ?
+            ''', (name, level, parent_tier_id, description, tier_id))
+            conn.commit()
+        return True
+    
+    def delete_tier(self, tier_id: str) -> bool:
+        """Delete a tier (only if no people or escalations are associated)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if tier has people
+            cursor.execute('SELECT COUNT(*) FROM people WHERE tier_id = ? AND is_active = 1', (tier_id,))
+            if cursor.fetchone()[0] > 0:
+                return False
+            
+            # Check if tier has escalations
+            cursor.execute('SELECT COUNT(*) FROM escalations WHERE source_tier_id = ? OR target_tier_id = ? OR current_tier_id = ?', 
+                         (tier_id, tier_id, tier_id))
+            if cursor.fetchone()[0] > 0:
+                return False
+            
+            # Check if tier has child tiers
+            cursor.execute('SELECT COUNT(*) FROM tiers WHERE parent_tier_id = ?', (tier_id,))
+            if cursor.fetchone()[0] > 0:
+                return False
+            
+            # Delete the tier
+            cursor.execute('DELETE FROM tiers WHERE id = ?', (tier_id,))
+            conn.commit()
+        return True
+    
+    def get_tier_by_id(self, tier_id: str) -> Optional[Dict]:
+        """Get a specific tier by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT t.*, pt.name as parent_tier_name
+                FROM tiers t
+                LEFT JOIN tiers pt ON t.parent_tier_id = pt.id
+                WHERE t.id = ?
+            ''', (tier_id,))
+            result = cursor.fetchone()
+            if result:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, result))
+        return None
     
     def get_tiers(self) -> pd.DataFrame:
         """Get all tiers"""
@@ -131,6 +233,46 @@ class DatabaseManager:
             ''', (person_id, name, email, tier_id, role))
             conn.commit()
         return person_id
+    
+    def update_person(self, person_id: str, name: str, email: str, tier_id: str, role: str) -> bool:
+        """Update an existing person"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE people 
+                SET name = ?, email = ?, tier_id = ?, role = ?
+                WHERE id = ?
+            ''', (name, email, tier_id, role, person_id))
+            conn.commit()
+        return True
+    
+    def delete_person(self, person_id: str) -> bool:
+        """Delete a person (soft delete by setting is_active to False)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE people 
+                SET is_active = 0
+                WHERE id = ?
+            ''', (person_id,))
+            conn.commit()
+        return True
+    
+    def get_person_by_id(self, person_id: str) -> Optional[Dict]:
+        """Get a specific person by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT p.*, t.name as tier_name
+                FROM people p
+                JOIN tiers t ON p.tier_id = t.id
+                WHERE p.id = ? AND p.is_active = 1
+            ''', (person_id,))
+            result = cursor.fetchone()
+            if result:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, result))
+        return None
     
     def get_people(self, tier_id: Optional[str] = None) -> pd.DataFrame:
         """Get all people or people in a specific tier"""
